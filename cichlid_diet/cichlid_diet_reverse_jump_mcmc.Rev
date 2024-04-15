@@ -1,0 +1,56 @@
+### Reverse-jump MCMC to estimate transition rates between diets ###
+
+morpho <- readDiscreteCharacterData("cichlid_diet_states.nex")
+moves = VectorMoves()
+monitors = VectorMonitors()
+phylogeny <- readTrees("cichlid_diet_tree.nex")[1]
+NUM_STATES=12
+
+rate_pr := phylogeny.treeLength() / 300
+
+mix_pr <- 0.25 
+# Prob of being fixed value, in this case 0 #
+NUM_RATES = NUM_STATES * (NUM_STATES-1)
+for ( i in 1:NUM_RATES ) {
+    rate[i] ~ dnRJMixture( 0.0, dnExponential(rate_pr), p=mix_pr )
+    moves.append( mvRJSwitch( rate[i], weight=1.0 ) )
+    moves.append( mvScale( rate[i], lambda=1.0, weight=2.0) )
+    moves.append( mvScale( rate[i], lambda=0.5, weight=2.0 ) )
+    moves.append( mvScale( rate[i], lambda=0.01, weight=2.0) )
+}
+
+for ( i in 1:NUM_RATES ) {
+    prob_rate[i] := ifelse( rate[i] == 0, 1.0, 0.0 )
+}
+
+Q_morpho := fnFreeK( rate, rescale=false )
+
+rf_prior <- [1,1,1,1,1,1,1,1,1,1,1,1]
+rf ~ dnDirichlet( rf_prior )
+moves.append( mvBetaSimplex( rf, weight=1.0 ) )
+moves.append( mvDirichletSimplex( rf, weight=1.0 ) )
+
+phyMorpho ~ dnPhyloCTMC(tree=phylogeny, Q=Q_morpho, rootFrequencies=rf, type="Standard")
+phyMorpho.clamp(morpho)
+
+mymodel = model(phylogeny)
+
+monitors.append( mnModel(filename="cichlid_diet_output/diet_ARD.log", printgen=1) )
+monitors.append( mnScreen(printgen=10) )
+monitors.append( mnJointConditionalAncestralState(tree=phylogeny,
+                                                 ctmc=phyMorpho,
+                                                 filename="cichlid_diet_output/diet_ARD.states.txt",
+                                                 type="Standard",
+                                                 printgen=500,
+                                                 withTips=true,
+                                                 withStartStates=false) )
+
+monitors.append( mnStochasticCharacterMap(ctmc=phyMorpho,
+                                          filename="cichlid_diet_output/diet_ARD_stoch_char_map.log",
+                                          printgen=500,
+                                          include_simmap=true) )
+
+mymcmc = mcmc(mymodel, monitors, moves, nruns=1)
+mymcmc.run(generations=10000, tuningInterval=200)
+
+
