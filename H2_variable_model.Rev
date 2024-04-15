@@ -1,0 +1,88 @@
+### This model utlizies the hidden state framework to set  ###
+### one hidden state to an ER model, and the second hidden ###
+### state to an ARD model.                                 ###
+
+morpho <- readDiscreteCharacterData("tip_states_FINAL.nex")
+morpho_exp = morpho.expandCharacters( 2 )
+morpho_exp.show()
+moves = VectorMoves()
+monitors = VectorMonitors()
+phylogeny <- readTrees("pruned_tree_FINAL.nexus")[1]
+
+for (i in 1:4) {
+  for (j in 1:4) {
+    rates[i][j] <- 0.0
+  }
+}
+
+NUM_HIDDEN_STATES = 2
+rate_pr := phylogeny.treeLength() / 200
+rate_pr2 := phylogeny.treeLength() / 400
+rate_pr3 := phylogeny.treeLength() / 10
+H <- 0.587405
+
+# Rate of Gain
+rate_gain ~ dnExponential( rate_pr )
+moves.append( mvScale( rate_gain, weight=2 ) )
+
+# Rate of Loss
+rate_loss ~ dnExponential( rate_pr )
+moves.append( mvScale( rate_loss, weight=2 ) )
+
+# Rate of Switch for ER
+rate_switch ~ dnExponential( rate_pr2 )
+moves.append( mvScale( rate_switch, weight=2 ) )
+
+switch_ER_ARD ~ dnExponential( rate_pr3 )
+switch_ARD_ER ~ dnExponential( rate_pr3 )
+moves.append( mvScale( switch_ER_ARD, weight=2 ) )
+moves.append( mvScale( switch_ARD_ER, weight=2 ) )
+
+rates[1][2] := rate_switch   # 0ER->1ER
+rates[1][3] := switch_ER_ARD # 0ER->0ARD
+rates[2][1] := rate_switch   # 1ER->0ER
+rates[2][4] := switch_ER_ARD # 1ER->1ARD
+rates[3][1] := switch_ARD_ER # 0ARD->0ER
+rates[3][4] := rate_gain     # 0ARD->1ARD
+rates[4][2] := switch_ARD_ER # 1ARD->1ER
+rates[4][3] := rate_loss     # 1ARD->0ARD
+
+Q_morpho := fnFreeK(rates, rescaled=FALSE)
+rf_prior <- rep(1,2*2)
+rf ~ dnDirichlet( rf_prior )
+moves.append( mvBetaSimplex( rf, weight=1 ) )
+moves.append( mvDirichletSimplex( rf, weight=1 ) )
+
+phyMorpho ~ dnPhyloCTMC(tree=phylogeny, Q=Q_morpho, rootFrequencies=rf, type="NaturalNumbers")
+phyMorpho.clamp(morpho_exp)
+mymodel = model(phylogeny)
+
+monitors.append( mnModel(filename="HRM2_variable_output/hrm2_variable.log", printgen=1) )
+monitors.append( mnScreen(printgen=1) )
+monitors.append( mnJointConditionalAncestralState(tree=phylogeny,
+                                                  ctmc=phyMorpho,
+                                                  filename="HRM2_variable_output/hrm2_variable.states.txt",
+                                                  type="NaturalNumbers",
+                                                  printgen=200,
+                                                  withTips=true,
+                                                  withStartStates=false) )
+
+monitors.append( mnStochasticCharacterMap(ctmc=phyMorpho,
+                                          filename="HRM2_variable_output/hrm2_variable_stoch_char_map.log",
+                                          printgen=200,
+                                          include_simmap=true) )
+
+### Estimate marginal likelihoods ###
+pow_p = powerPosterior(mymodel, moves, monitors, "HRM2_variable_output/HRM2_variable.out", cats=10) 
+pow_p.burnin(generations=5000,tuningInterval=500)
+pow_p.run(generations=1000)  
+
+### Stepping stone sampler ###
+ss = steppingStoneSampler(file="HRM2_variable_output/HRM2_variable.out", powerColumnName="power", likelihoodColumnName="likelihood")
+ss.marginal() 
+
+q()
+
+
+
+
