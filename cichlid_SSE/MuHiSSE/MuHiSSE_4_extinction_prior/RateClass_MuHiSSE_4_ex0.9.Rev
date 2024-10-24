@@ -1,0 +1,104 @@
+### MuHiSSE-4 model with extinction rate at least 90% of speciation rate ###
+
+NUM_TOTAL_SPECIES     = 1154
+NUM_SPECIES           = 1069
+NUM_STATES            = 4
+NUM_HIDDEN            = 4
+NUM_RATES             = NUM_STATES * NUM_HIDDEN
+DATASET               = "Rate_Class"
+H                     = 0.587405
+
+observed_phylogeny <- readTrees("cichlid_tree.nex")[1]
+data <- readCharacterData("rate_traits.nex")
+taxa <- observed_phylogeny.taxa()
+tree_length <- observed_phylogeny.treeLength()
+root_age <- observed_phylogeny.rootAge()
+data_exp <- data.expandCharacters( NUM_HIDDEN )
+
+mvi = 0
+mni = 0
+
+rate_mean <- ln( ln(NUM_SPECIES/2.0) / root_age )
+rate_sd ~ dnExponential( 1.0 / H )
+rate_exp <- 2
+moves[++mvi] = mvScale(rate_sd, lambda=1.0, tune=true, weight=2.0)
+
+for (i in 1:NUM_STATES) {
+
+speciation_alpha[i] ~ dnNormal(mean=rate_mean,sd=rate_sd)
+moves[++mvi] = mvScale(speciation_alpha[i],lambda=0.1,tune=true,weight=2.0)
+moves[++mvi] = mvScale(speciation_alpha[i],lambda=1.0,tune=true,weight=2.0)
+moves[++mvi] = mvSlide(speciation_alpha[i],delta=2.0,tune=true,weight=2.0)
+
+}
+
+for (i in 1:NUM_HIDDEN) {
+
+speciation_beta[i] ~ dnExp(1.0)
+
+moves[++mvi] = mvScale(speciation_beta[i],lambda=0.1,tune=true,weight=2.0)
+moves[++mvi] = mvScale(speciation_beta[i],lambda=1.0,tune=true,weight=2.0)
+moves[++mvi] = mvSlide(speciation_beta[i],delta=2.0,tune=true,weight=2.0)
+
+}
+
+for (j in 1:NUM_HIDDEN) {
+for (i in 1:NUM_STATES) {
+if ( j == 1) {
+speciation[i] := exp( speciation_alpha[i] )
+extra[i] ~ dnExp(lambda = rate_exp)
+moves[++mvi] = mvScale(extra[i],weight=1.0)
+extinction[i] := 0.9*speciation[i] + extra[i]
+} else {
+index = i+(j*NUM_STATES)-NUM_STATES
+speciation[index] := speciation[index-NUM_STATES] * exp( speciation_beta[j-1] )
+extra[index] ~ dnExp(lambda = rate_exp)
+moves[++mvi] = mvScale(extra[index],weight=1.0)
+extinction[index] := 0.9*speciation[index] + extra[index]
+}
+}
+}
+
+rate_pr := observed_phylogeny.treeLength() / 10
+for ( i in 1:(NUM_STATES*(NUM_STATES-1)) ) {
+    transition_rates[i] ~ dnExp(rate_pr)
+    moves[++mvi] = mvScale(transition_rates[i],lambda=1.0,tune=true,weight=2.0)
+    moves[++mvi] = mvScale(transition_rates[i],lambda=0.1,tune=true,weight=2.0)
+}
+
+hidden_rate ~ dnExponential(rate_pr)
+moves[++mvi] = mvScale(hidden_rate,lambda=0.5,tune=true,weight=5) 
+
+for (i in 1:(NUM_HIDDEN * (NUM_HIDDEN - 1))) {
+    R[i] ~ dnExp( rate_pr )
+    moves[++mvi] = mvScale(R[i],lambda=1.0,tune=true,weight=2.0)
+    moves[++mvi] = mvScale(R[i],lambda=0.1,tune=true,weight=2.0)
+}
+
+rate_matrix := fnHiddenStateRateMatrix(transition_rates, R, rescaled=false)
+
+root_prior ~ dnDirichlet( rep(1,NUM_RATES) )
+moves[++mvi] = mvDirichletSimplex(root_prior,tune=true,weight=2.0)
+moves[++mvi] = mvBetaSimplex(root_prior,tune=true,weight=2.0)
+
+rho <- observed_phylogeny.ntips()/NUM_TOTAL_SPECIES
+
+timetree ~ dnCDBDP( rootAge = root_age,
+speciationRates   = speciation,
+extinctionRates   = extinction,
+nTimeSlices       = 500,
+Q                 = rate_matrix,
+pi                = root_prior,
+delta             = 1.0,
+rho               = rho)
+
+timetree.clamp( observed_phylogeny )
+timetree.clampCharData( data_exp )
+mymodel = model(rate_matrix)
+
+monitors[++mni] = mnModel(filename="MuHiSSE_4_ex0.9/Rate_MuHiSSE.log", printgen=1)
+monitors[++mni] = mnScreen(printgen=1, speciation, extinction)
+
+mymcmc = mcmc(mymodel, monitors, moves, nruns=1, moveschedule="random", combine="mixed")
+mymcmc.burnin(generations=5000, tuningInterval=100)
+mymcmc.run(generations=100000, tuningInterval=100)
